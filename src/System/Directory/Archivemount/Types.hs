@@ -4,8 +4,8 @@ module System.Directory.Archivemount.Types
  ,Version
    (InstalledVersion
       ,archivemount,fuse,fusermount,fuseKernelInterface
-    ,NotInstalled
-    ,InstalledButVersionInfoCouldNotBeParsed))
+   ,NotInstalled
+   ,InstalledButVersionInfoCouldNotBeParsed))
  where
 
 data MountStatus = Mounted | CouldNotMount String deriving (Show)

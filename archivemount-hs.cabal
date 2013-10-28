@@ -8,6 +8,7 @@ Author:         Timothy Hobbs
 Maintainer:     Timothy Hobbs <timothyhobbs@seznam.cz>
 build-type:     Simple
 cabal-version:  >=1.8
+description:    You can use this package to mount various types of
 
 library
   exposed-modules:  System.Directory.Archivemount
@@ -17,7 +18,8 @@ library
                 process,
                 process-shortversions,
                 split >=0.2.2 && <0.3,
-                parsec >=3.1.2 && <3.2
+                parsec >=3.1.2 && <3.2,
+                directory >=1.1.0 && <1.2
   other-modules:    
                     System.Directory.Archivemount.VersionParser,
                     System.Directory.Archivemount.Types
@@ -32,7 +34,7 @@ test-suite CheckParsers
                   process,
                   split >=0.2.2 && <0.3
   hs-source-dirs:  
-                   src, 
+                   src,
                    test
   other-modules:   
                    CheckParsers
@@ -40,3 +42,6 @@ test-suite CheckParsers
                    System.Directory.Archivemount.VersionParser,
                    System.Directory.Archivemount.VersionParserTest
 
+source-repository head
+  type: git
+  location: https://github.com/timthelion/archivemount-hs.git
