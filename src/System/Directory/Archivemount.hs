@@ -1,4 +1,10 @@
 {-# LANGUAGE PackageImports #-}
+{-
+This module provides the public interface to the Archivemount library.
+It provides both standard archivemount calls(mount/unmount)
+as well as portable versions which can unpack a tarbal rather than mounting it,
+when mounting is impossible.
+-}
 module System.Directory.Archivemount
  (Option(ReadOnly,NoBackup,NoSave,Subtree,OtherOption)
  ,MountStatus(Mounted,CouldNotMount)

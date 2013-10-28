@@ -1,4 +1,7 @@
 {-# OPTIONS_GHC -F -pgmF htfpp #-}
+{-
+This module tests how the version parser(System.Directory.Archivemount.VersionParser) handles valid and invalid input.
+-}
 module System.Directory.Archivemount.VersionParserTest where
 
 import System.Directory.Archivemount.VersionParser

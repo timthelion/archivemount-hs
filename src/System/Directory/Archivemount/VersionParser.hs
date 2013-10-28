@@ -1,4 +1,7 @@
 {-# LANGUAGE PackageImports #-}
+{-
+This module parses version information printed out by archivemount.
+-}
 module System.Directory.Archivemount.VersionParser
  (parseVersionInfo)
  where

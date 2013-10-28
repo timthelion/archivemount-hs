@@ -1,3 +1,6 @@
+{-
+This module describes the general shared types.
+-}
 module System.Directory.Archivemount.Types
  (MountStatus(Mounted,CouldNotMount)
  ,UnmountStatus(Unmounted,CouldNotUnmount)
