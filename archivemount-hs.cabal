@@ -1,0 +1,42 @@
+Name:           archivemount-hs
+Version:        0.0.0
+Synopsis:       Mount archives using fuse from haskell
+Category:       System
+License:        GPL-3
+License-file:   COPYING
+Author:         Timothy Hobbs
+Maintainer:     Timothy Hobbs <timothyhobbs@seznam.cz>
+build-type:     Simple
+cabal-version:  >=1.8
+
+library
+  exposed-modules:  System.Directory.Archivemount
+  hs-source-dirs:   src
+  build-depends:    
+                base,
+                process,
+                process-shortversions,
+                split >=0.2.2 && <0.3,
+                parsec >=3.1.2 && <3.2
+  other-modules:    
+                    System.Directory.Archivemount.VersionParser,
+                    System.Directory.Archivemount.Types
+
+test-suite CheckParsers
+  type:            exitcode-stdio-1.0
+  main-is:         CheckParsers.hs
+  ghc-options:     -Wall -rtsopts
+  build-depends:   
+                  base >= 4,
+                  HTF,
+                  process,
+                  split >=0.2.2 && <0.3
+  hs-source-dirs:  
+                   src, 
+                   test
+  other-modules:   
+                   CheckParsers
+                   System.Directory.Archivemount.Types,
+                   System.Directory.Archivemount.VersionParser,
+                   System.Directory.Archivemount.VersionParserTest
+
