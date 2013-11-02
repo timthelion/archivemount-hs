@@ -76,7 +76,7 @@ lookupBy
  -> Maybe b
 lookupBy test list
  =   snd
- <$> find (\(a,b)->test a) list
+ <$> find (\(a,_)->test a) list
 
 versionDictionary
  :: String

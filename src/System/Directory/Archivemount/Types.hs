@@ -5,7 +5,7 @@ GPL3. License info is at the bottom of the file.
 -}
 module System.Directory.Archivemount.Types
  (MountStatus(Mounted,CouldNotMount)
- ,UnmountStatus(Unmounted,CouldNotUnmount)
+ ,UnmountStatus(Unmounted,CouldNotUnmount,CouldNotUnmountDeviceOrResourceBusy)
  ,Version
    (InstalledVersion
       ,archivemount,fuse,fusermount,fuseKernelInterface
@@ -13,9 +13,9 @@ module System.Directory.Archivemount.Types
    ,InstalledButVersionInfoCouldNotBeParsed))
  where
 
-data MountStatus = Mounted | CouldNotMount String deriving (Show)
+data MountStatus = Mounted | CouldNotMount String deriving (Show, Eq)
 
-data UnmountStatus = Unmounted | CouldNotUnmount String deriving (Show)
+data UnmountStatus = Unmounted | CouldNotUnmount String | CouldNotUnmountDeviceOrResourceBusy deriving (Show, Eq)
 
 data Version
  = InstalledVersion

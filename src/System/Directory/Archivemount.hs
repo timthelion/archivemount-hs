@@ -10,7 +10,7 @@ GPL3. License info is at the bottom of the file.
 module System.Directory.Archivemount
  (Option(ReadOnly,NoBackup,NoSave,Subtree,OtherOption)
  ,MountStatus(Mounted,CouldNotMount)
- ,UnmountStatus(Unmounted,CouldNotUnmount)
+ ,UnmountStatus(Unmounted,CouldNotUnmount,CouldNotUnmountDeviceOrResourceBusy)
  ,Version
    (InstalledVersion
       ,archivemount,fuse,fusermount,fuseKernelInterface
@@ -20,32 +20,93 @@ module System.Directory.Archivemount
  ,mountArchive
  ,unmountArchive
  ,mountArchivePortable
- ,unmountArchivePortable) where
+ ,unmountArchivePortable
+ ,mountTarballForSavingPortable
+ ,FileTreeMetaData
+ ,saveAndUnmountNoncompressedTarballPortable) where
 
 import System.Directory.Archivemount.Types
 import System.Directory.Archivemount.VersionParser
 
-import System.Exit
+import "base" System.Exit
   (ExitCode(ExitSuccess))
 
-import Data.Maybe
+import "base" Data.Maybe
  (mapMaybe)
 
 import "base" Data.List
- (intersperse)
+ (intersperse
+ ,isInfixOf)
+
+import "base" Data.Functor
+ ((<$>))
+
+import "base" System.Environment
+ (getEnvironment)
+
+import qualified "tar" Codec.Archive.Tar as Tar
+ (extract)
+
+import qualified "containers" Data.Map as Map
+ (toList
+ ,fromList
+ ,insert
+ ,difference
+ ,intersectionWith
+ ,Map)
 
 import "process" System.Process
  (readProcess
- ,readProcessWithExitCode)
+ ,readProcessWithExitCode
+ ,proc
+ ,env)
 
 import "process-shortversions" System.Process.ShortVersions
  (commandExists
- ,runCommandInDir)
+ ,runCommandInDir
+ ,readCreateProcessWithExitCode)
 
 import "directory" System.Directory
  (createDirectoryIfMissing
  ,doesDirectoryExist
- ,removeDirectory)
+ ,removeDirectory
+ ,removeFile)
+
+import "small-print" Control.Exception.SmallPrint
+ ((*@)
+ ,(*@@)
+ ,exception)
+
+import "filepath" System.FilePath
+ (pathSeparators
+ ,(</>)
+ ,takeDirectory)
+
+import "filepath-extrautils" System.FilePath.ExtraUtils
+ (getRealDirectoryContents
+ ,getDirectoryContentsRecursive)
+
+import qualified "bytestring" Data.ByteString as BS
+ (readFile
+ ,writeFile
+ ,ByteString)
+
+import qualified "bytestring" Data.ByteString.Lazy as LBS
+ (readFile
+ ,fromChunks)
+
+import "temporary" System.IO.Temp
+ (withSystemTempDirectory)
+
+import "unix-compat" System.PosixCompat.Files
+ (createNamedPipe
+ ,unionFileModes
+ ,ownerReadMode
+ ,ownerWriteMode
+ ,FileStatus
+ ,getFileStatus
+ ,fileSize
+ ,modificationTime)
 
 -- | See `archivemount -h` for details.
 data Option
@@ -77,15 +138,17 @@ archivemountCommand = "archivemount"
 fusermountCommand = "fusermount"
 tarCommand = "tar"
 
--- | Returns Nothing if archivemount is not in the $PATH.
+-- | Returns NotInstalled if archivemount is not in the $PATH.
 archivemountVersion :: IO Version
-archivemountVersion = do
- installed <- archivemountInstalled
- case installed of
-  False -> return NotInstalled
-  True -> do
-   (_,versionInfo,errs) <- readProcessWithExitCode archivemountCommand ["-V"] ""
-   return $ parseVersionInfo $ errs ++ versionInfo
+archivemountVersion =
+ (do
+  (_,versionInfo,errs) <- readProcessWithExitCode archivemountCommand ["-V"] ""
+  return $ parseVersionInfo $ errs ++ versionInfo) *@@ archivemountNotInstalled
+ where
+ archivemountNotInstalled =
+  exception
+   (not <$> archivemountInstalled)
+   (return NotInstalled)
 
 archivemountInstalled :: IO Bool
 archivemountInstalled =
@@ -119,19 +182,26 @@ mountArchive options args archive mountPoint
 
 unmountArchive :: FilePath -> IO UnmountStatus
 unmountArchive whatToUnmount = do
+ environment <- getEnvironment
+ let unmountCommand = (proc fusermountCommand ["-u",whatToUnmount])
+                      {env=Just $ Map.toList $ Map.insert "LANG" "C" $ Map.fromList environment}
  (exitCode,output,errors)
-  <- readProcessWithExitCode
-      fusermountCommand
-      ["-u",whatToUnmount]
+  <- readCreateProcessWithExitCode
+      unmountCommand
       ""
  case exitCode of
   ExitSuccess -> return Unmounted
-  _ -> return $ CouldNotUnmount
+  _ -> (return $ CouldNotUnmount
         $ unlines
         [ "Standard ouput:"
         , output
         , "Errors:"
-        , errors]
+        , errors]) *@@ (deviceOrResourceBusy errors)
+ where
+  deviceOrResourceBusy errors =
+   exception
+    (return $ isInfixOf "Device or resource busy" errors)
+    (return $ CouldNotUnmountDeviceOrResourceBusy)
 
 -- | Mount an archive in a portable fashion.
 -- If archivemount >= 0.8.2 is available,
@@ -144,11 +214,13 @@ mountArchivePortable
  :: FilePath -- ^ What to mount (path to archive)
  -> FilePath -- ^ Where to mount it (mountpoint)
  -> IO MountStatus
-mountArchivePortable archive mountpoint = do
- nss <- nosaveSupported
- case nss of
-  True  -> mountArchive [NoSave] [] archive mountpoint
-  False -> unpackArchive archive mountpoint
+mountArchivePortable archive mountpoint =
+ mountArchive [NoSave] [] archive mountpoint *@@ nosaveNotSupported
+ where
+ nosaveNotSupported =
+  exception
+   (not <$> nosaveSupported)
+   (unpackArchive archive mountpoint)
 
 -- | Unpack the archive to the given directory using tar.
 unpackArchive
@@ -157,23 +229,15 @@ unpackArchive
  -> IO MountStatus
 unpackArchive archive unpackTo = do
  createDirectoryIfMissing True unpackTo
- (exitCode,output,errors)<- readProcessWithExitCode
-     tarCommand
-     ["-xaf",archive,"-C",unpackTo]
-     ""
- case exitCode of
-  ExitSuccess -> return Mounted
-  _ -> return $ CouldNotMount $ unlines ["Output:",output,"Errors:",errors]
+ Tar.extract unpackTo archive -- TODO Check for errors
+ return Mounted
 
 -- | Return true if archivemount is installed and the nosave option is supported.
 nosaveSupported :: IO Bool
 nosaveSupported = do
  v <- archivemountVersion
  case v of
-  InstalledVersion{} ->
-   case archivemount v >= [0,8,2] of
-    True  -> return True
-    False -> return False
+  InstalledVersion{} -> return $ archivemount v >= [0,8,2]
   _ -> return False
 
 -- | Unmount a mounted archive or delete an unpacked version of an archive.
@@ -182,20 +246,26 @@ nosaveSupported = do
 unmountArchivePortable
  :: FilePath -- ^ What to unmount/delete
  -> IO UnmountStatus
-unmountArchivePortable toUnmount = do
- nss <- nosaveSupported
- case nss of
-  True  -> do
-   status <- unmountArchive toUnmount
-   case status of
-    Unmounted -> do
-     stillExists <- doesDirectoryExist toUnmount
-     case stillExists of
-      True  -> removeDirectory toUnmount
-      False -> return ()
-    _ -> return ()
-   return status
-  False -> deleteUnpackedDirectoryTree toUnmount
+unmountArchivePortable toUnmount =
+ (do
+  status <- unmountArchive toUnmount
+  removeDirectory toUnmount *@@ mountPointNoLongerExists *@@ archiveNotUnmounted status
+  return status) *@@ nosaveNotSupported
+
+  where
+  archiveNotUnmounted status =
+   exception
+    (return $ status /= Unmounted)
+    (return ())
+  mountPointNoLongerExists =
+   exception
+    (not <$> doesDirectoryExist toUnmount)
+    (return ())
+  nosaveNotSupported =
+   exception
+    (not <$> nosaveSupported)
+    (deleteUnpackedDirectoryTree toUnmount)
+
 -- | Delete a directory recursively.  If an exception occures, report CouldNotUnmount
 deleteUnpackedDirectoryTree
  :: FilePath -- ^ Path to directory to be deleted.
@@ -207,6 +277,91 @@ deleteUnpackedDirectoryTree dir = do
   ExitSuccess -> return Unmounted
   _ -> return $ CouldNotUnmount $ unlines ["Output:",output,"Errors:",errors]
 
+type FileTreeMetaData = [(FilePath,FileStatus)]
+
+gatherFileTreeMetaData
+ :: FilePath -- ^ root of file tree where we will gather the metadata
+ -> IO FileTreeMetaData
+gatherFileTreeMetaData root = do
+ fileTree <- getDirectoryContentsRecursive root
+ statuses <- mapM getFileStatus fileTree
+ return $ zip fileTree statuses
+
+mountTarballForSavingPortable
+ :: FilePath -- ^ what to mount(path to archive)
+ -> FilePath -- ^ where to mount it (mountpoint)
+ -> IO (MountStatus,Maybe FileTreeMetaData)
+mountTarballForSavingPortable archive mountpoint = do
+ status <- mountArchivePortable archive mountpoint
+ fileTreeMetaData <- (Just <$> gatherFileTreeMetaData mountpoint) *@@ mountFailed status
+ return (status,fileTreeMetaData)
+ where
+ mountFailed status =
+  exception
+   (return $ status /= Mounted)
+   (return $ Nothing)
+
+saveAndUnmountNoncompressedTarballPortable
+ :: FileTreeMetaData -- ^ The metadata returned by 
+ -> FilePath -- ^ Path to directory tree which we are saving
+ -> FilePath -- ^ Path to tarbal to which we are saving
+ -> IO UnmountStatus
+saveAndUnmountNoncompressedTarballPortable before mountpoint archive = do
+ after <- gatherFileTreeMetaData mountpoint
+ let diff = mapDiff timeOrSizeChanged (Map.fromList before) (Map.fromList after)
+ modifiedFileContents <- mapM BS.readFile $ modified diff
+ createdFileContents <- mapM BS.readFile $ created diff
+ status <- unmountArchivePortable mountpoint
+ (do
+  deleteFromTar archive (deleted diff++modified diff)
+  appendToTar archive $ zip (modified diff ++ created diff) (modifiedFileContents ++ createdFileContents)
+  return status) *@@ couldNotUnmount status
+ where
+ couldNotUnmount status = exception
+  (return $ not $ status == Unmounted)
+  (return status)
+
+data Diff a =
+ Diff
+ {modified :: [a]
+ ,created  :: [a]
+ ,deleted  :: [a]}
+
+mapDiff :: (Ord k) => (a->a->Bool)-> Map.Map k a -> Map.Map k a -> Diff k
+mapDiff changeCheck before after =
+ Diff
+ {modified = map fst $ filter snd $ Map.toList $ Map.intersectionWith changeCheck before after
+ ,created  = map fst $ Map.toList $ Map.difference after before
+ ,deleted  = map fst $ Map.toList $ Map.difference before after}
+
+timeOrSizeChanged :: FileStatus -> FileStatus -> Bool
+timeOrSizeChanged before after
+ =  fileSize before /= fileSize after
+ || modificationTime before /= modificationTime after
+
+deleteFromTar
+ :: FilePath -- ^ Archive
+ -> [FilePath] -- ^ What to delete from it
+ -> IO ()
+deleteFromTar archive whatToDelete = do
+ _ <- readProcess tarCommand ("--delete":whatToDelete) ""
+ return ()
+
+appendToTar
+ :: FilePath -- ^ archive
+ -> [(FilePath,BS.ByteString)] -- ^ objects to append
+ -> IO ()
+appendToTar archive fileObjects = do
+ withSystemTempDirectory (filter (\c->notElem c pathSeparators) archive) appendObjects
+ return ()
+ where
+ appendObjects tempDir = mapM (appendObject tempDir) fileObjects
+ appendObject tempDir (path,content) = do
+  createDirectoryIfMissing True $ tempDir </> takeDirectory path
+  createNamedPipe (tempDir </> path) (unionFileModes ownerReadMode ownerWriteMode)
+  BS.writeFile (tempDir </> path) content
+  runCommandInDir tempDir tarCommand ["-r","--file="++archive,path]
+  removeFile (tempDir </> path)
 
 {-
 -- Copyright (C) 2013 Timothy Hobbs <timothyhobbs@seznam.cz>

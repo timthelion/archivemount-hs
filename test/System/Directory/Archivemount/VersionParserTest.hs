@@ -10,7 +10,7 @@ import System.Directory.Archivemount.Types
 
 import Test.Framework
 
-test_validVersion = do
+test_validVersion =
  assertEqual
   (InstalledVersion
    {archivemount=[0,8,2]
