@@ -32,7 +32,8 @@ import "base" System.Exit
   (ExitCode(ExitSuccess))
 
 import "base" Data.Maybe
- (mapMaybe)
+ (mapMaybe
+ ,fromJust)
 
 import "base" Data.List
  (intersperse
@@ -43,6 +44,9 @@ import "base" Data.Functor
 
 import "base" System.Environment
  (getEnvironment)
+
+import "base" Control.Monad
+ (filterM)
 
 import qualified "tar" Codec.Archive.Tar as Tar
  (extract)
@@ -69,6 +73,7 @@ import "process-shortversions" System.Process.ShortVersions
 import "directory" System.Directory
  (createDirectoryIfMissing
  ,doesDirectoryExist
+ ,doesFileExist
  ,removeDirectory
  ,removeFile)
 
@@ -80,7 +85,8 @@ import "small-print" Control.Exception.SmallPrint
 import "filepath" System.FilePath
  (pathSeparators
  ,(</>)
- ,takeDirectory)
+ ,takeDirectory
+ ,makeRelative)
 
 import "filepath-extrautils" System.FilePath.ExtraUtils
  (getRealDirectoryContents
@@ -90,10 +96,6 @@ import qualified "bytestring" Data.ByteString as BS
  (readFile
  ,writeFile
  ,ByteString)
-
-import qualified "bytestring" Data.ByteString.Lazy as LBS
- (readFile
- ,fromChunks)
 
 import "temporary" System.IO.Temp
  (withSystemTempDirectory)
@@ -219,7 +221,7 @@ mountArchivePortable archive mountpoint =
  where
  nosaveNotSupported =
   exception
-   (not <$> nosaveSupported)
+   (return True) -- (not <$> nosaveSupported) -- TODO fix permission denied bugs with archivemount
    (unpackArchive archive mountpoint)
 
 -- | Unpack the archive to the given directory using tar.
@@ -263,7 +265,7 @@ unmountArchivePortable toUnmount =
     (return ())
   nosaveNotSupported =
    exception
-    (not <$> nosaveSupported)
+    (return True) --(not <$> nosaveSupported) -- TODO fix Permission Denied bugs with archivemount
     (deleteUnpackedDirectoryTree toUnmount)
 
 -- | Delete a directory recursively.  If an exception occures, report CouldNotUnmount
@@ -283,8 +285,11 @@ gatherFileTreeMetaData
  :: FilePath -- ^ root of file tree where we will gather the metadata
  -> IO FileTreeMetaData
 gatherFileTreeMetaData root = do
- fileTree <- getDirectoryContentsRecursive root
- statuses <- mapM getFileStatus fileTree
+ fileTree' <- getDirectoryContentsRecursive root
+ statuses <- mapM getFileStatus fileTree'
+ putStrLn $ unwords ["Root:",root]
+ putStrLn $ unlines fileTree'
+ let fileTree = map (\path->makeRelative root path) fileTree'
  return $ zip fileTree statuses
 
 mountTarballForSavingPortable
@@ -309,12 +314,20 @@ saveAndUnmountNoncompressedTarballPortable
 saveAndUnmountNoncompressedTarballPortable before mountpoint archive = do
  after <- gatherFileTreeMetaData mountpoint
  let diff = mapDiff timeOrSizeChanged (Map.fromList before) (Map.fromList after)
- modifiedFileContents <- mapM BS.readFile $ modified diff
- createdFileContents <- mapM BS.readFile $ created diff
+ modifiedFiles <- filterM doesFileExist $ modified diff
+ createdFiles <- filterM doesFileExist $ created diff
+ modifiedFileContents <- mapM BS.readFile modifiedFiles
+ createdFileContents <- mapM BS.readFile createdFiles
  status <- unmountArchivePortable mountpoint
  (do
+  putStrLn "Deleted files"
+  mapM putStrLn $ deleted diff
+  putStrLn "Modified files"
+  mapM putStrLn $ modified diff
+  putStrLn "Created files"
+  mapM putStrLn $ created diff
   deleteFromTar archive (deleted diff++modified diff)
-  appendToTar archive $ zip (modified diff ++ created diff) (modifiedFileContents ++ createdFileContents)
+  appendToTar archive $ zip (modifiedFiles ++ createdFiles) (modifiedFileContents ++ createdFileContents)
   return status) *@@ couldNotUnmount status
  where
  couldNotUnmount status = exception
@@ -344,7 +357,7 @@ deleteFromTar
  -> [FilePath] -- ^ What to delete from it
  -> IO ()
 deleteFromTar archive whatToDelete = do
- _ <- readProcess tarCommand ("--delete":whatToDelete) ""
+ _ <- readProcess tarCommand (("--file="++archive):"--delete":whatToDelete) ""
  return ()
 
 appendToTar
@@ -358,6 +371,7 @@ appendToTar archive fileObjects = do
  appendObjects tempDir = mapM (appendObject tempDir) fileObjects
  appendObject tempDir (path,content) = do
   createDirectoryIfMissing True $ tempDir </> takeDirectory path
+  putStrLn $ unwords ["Creating named pipe:",tempDir </> path,"tempdir is:",tempDir]
   createNamedPipe (tempDir </> path) (unionFileModes ownerReadMode ownerWriteMode)
   BS.writeFile (tempDir </> path) content
   runCommandInDir tempDir tarCommand ["-r","--file="++archive,path]
